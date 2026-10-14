@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ShopWatch Admin</title><link rel="stylesheet" href="style.css"></head>
+<body><header><div><b>ShopWatch platform admin</b></div></header><main>
+<div class="card"><div class="row"><input id="key" type="password" placeholder="Admin key (ADMIN_KEY setting)" style="max-width:320px"><button class="btn" id="go">Load shops</button></div></div>
+<div class="card"><table id="t"></table></div></main>
+<script>
+const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dt=t=>t?new Date(t).toLocaleDateString():'-';
+async function load(){
+  const r=await fetch('/api/admin/shops',{headers:{'x-admin-key':$('#key').value}});const j=await r.json();
+  if(!r.ok){$('#t').innerHTML='<tr><td class="err">'+esc(j.error)+'</td></tr>';return;}
+  sessionStorage.k=$('#key').value;
+  $('#t').innerHTML='<tr><th>Shop</th><th>Owner</th><th>Staff</th><th>Products</th><th>Sales</th><th>Last sale</th><th>Joined</th><th></th></tr>'+
+   j.map(s=>`<tr><td>${esc(s.name)} ${s.active?'':'<span class="pill bad">suspended</span>'}</td><td>${esc(s.owner)}<br><small class="muted">${esc(s.username)}</small></td><td>${s.users}</td><td>${s.products}</td><td>${s.sales}</td><td>${dt(s.lastSale)}</td><td>${dt(s.created)}</td>
+   <td><button class="btn sm ghost" onclick="tog('${s.id}',${!s.active})">${s.active?'Suspend':'Reactivate'}</button></td></tr>`).join('');
+}
+async function tog(id,active){await fetch('/api/admin/shops/'+id,{method:'POST',headers:{'x-admin-key':$('#key').value,'content-type':'application/json'},body:JSON.stringify({active})});load();}
+$('#go').onclick=load;if(sessionStorage.k){$('#key').value=sessionStorage.k;load();}
+</script></body></html>
