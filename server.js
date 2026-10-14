@@ -78,6 +78,7 @@ const sum = (a, f) => a.reduce((x, y) => x + f(y), 0);
 const r2 = n => Math.round(n * 100) / 100;
 const saleProfit = s => sum(s.items, i => (i.price - i.cost) * i.qty);
 const tracked = p => p.tracksStock !== false;
+const floorOf = p => Math.min(p.minPrice ?? p.price, p.price); // lowest price a shopkeeper may accept
 const pub = u => ({ id: u.id, name: u.name, username: u.username, role: u.role, active: u.active, lastLogin: u.lastLogin });
 const sign = (u, sh) => jwt.sign({ id: u.id, shop: sh.id }, SECRET, { expiresIn: '14d' });
 const err = (res, code, msg) => res.status(code).json({ error: msg });
@@ -198,8 +199,10 @@ app.post('/api/products', auth, owner, (req, res) => {
   const price = Number(b.price), cost = Number(b.costPrice || 0), rl = Number(b.reorderLevel || 0);
   const track = b.tracksStock !== 'no' && b.tracksStock !== false;
   const stock = track ? Number(b.stock || 0) : 0;
+  const minP = b.minPrice === undefined || b.minPrice === '' || b.minPrice === null ? price : Number(b.minPrice);
+  if (!(minP >= 0) || minP > price) return err(res, 400, 'Lowest allowed price must be between 0 and the selling price');
   if (!b.name?.trim() || !(price >= 0) || !(cost >= 0) || !(stock >= 0) || !(rl >= 0)) return err(res, 400, 'Name and valid numbers are required');
-  const p = { id: uid(), name: b.name.trim(), sku: (b.sku || '').trim(), category: (b.category || 'General').trim(), unit: (b.unit || 'pcs').trim(), costPrice: cost, price, stock, reorderLevel: track ? rl : 0, tracksStock: track, archived: false, created: Date.now() };
+  const p = { id: uid(), name: b.name.trim(), sku: (b.sku || '').trim(), category: (b.category || 'General').trim(), unit: (b.unit || 'pcs').trim(), costPrice: cost, price, minPrice: minP, stock, reorderLevel: track ? rl : 0, tracksStock: track, archived: false, created: Date.now() };
   add(sh, 'products', p);
   if (stock > 0) add(sh, 'moves', { id: uid(), ts: Date.now(), type: 'in', productId: p.id, name: p.name, qty: stock, before: 0, after: stock, by: req.user.name, note: 'Opening stock' });
   audit(sh, req.user, 'product_add', `Added ${p.name} (stock ${track ? stock : 'not tracked'}, price ${price})`);
@@ -210,10 +213,11 @@ app.put('/api/products/:id', auth, owner, (req, res) => {
   if (!p) return err(res, 404, 'Not found');
   const b = req.body || {}, changes = [];
   for (const k of ['name', 'sku', 'category', 'unit']) if (b[k] !== undefined && b[k] !== p[k]) { changes.push(`${k}: ${p[k]} → ${b[k]}`); p[k] = String(b[k]).trim(); }
-  for (const k of ['costPrice', 'price', 'reorderLevel']) if (b[k] !== undefined) {
+  for (const k of ['costPrice', 'price', 'minPrice', 'reorderLevel']) if (b[k] !== undefined && b[k] !== '') {
     const v = Number(b[k]); if (!(v >= 0)) return err(res, 400, `Invalid ${k}`);
     if (v !== p[k]) { changes.push(`${k}: ${p[k]} → ${v}`); p[k] = v; }
   }
+  if (p.minPrice != null && p.minPrice > p.price) { p.minPrice = p.price; changes.push('lowest price lowered to match selling price'); }
   if (b.tracksStock !== undefined) { const t = b.tracksStock !== 'no' && b.tracksStock !== false; if (t !== tracked(p)) { p.tracksStock = t; changes.push(t ? 'now tracks stock' : 'stops tracking stock'); } }
   if (b.archived !== undefined) { p.archived = !!b.archived; changes.push(p.archived ? 'archived' : 'restored'); }
   put(sh, 'products', p); audit(sh, req.user, 'product_edit', `${p.name}: ${changes.join(', ') || 'no change'}`);
@@ -259,8 +263,14 @@ app.post('/api/sales', auth, (req, res) => {
     const p = sh.products.find(x => x.id === it.productId && !x.archived), n = Number(it.qty);
     if (!p || !(n > 0)) return err(res, 400, 'Invalid item in sale');
     need[p.id] = (need[p.id] || 0) + n;
-    const price = req.user.role === 'owner' && it.price != null && Number(it.price) >= 0 ? Number(it.price) : p.price;
-    lines.push({ productId: p.id, name: p.name, qty: n, price, cost: p.costPrice || 0 });
+    let price = p.price;
+    if (it.price != null && it.price !== '') {
+      const x = Number(it.price);
+      if (!(x >= 0)) return err(res, 400, 'Invalid price for ' + p.name);
+      if (req.user.role !== 'owner' && x < floorOf(p)) return err(res, 400, `The lowest price allowed for ${p.name} is ${floorOf(p)}. Call the owner to approve a lower price.`);
+      price = x;
+    }
+    lines.push({ productId: p.id, name: p.name, qty: n, price, listPrice: p.price, cost: p.costPrice || 0 });
   }
   for (const pid in need) {
     const p = sh.products.find(x => x.id === pid);
@@ -268,8 +278,9 @@ app.post('/api/sales', auth, (req, res) => {
   }
   for (const pid in need) { const p = sh.products.find(x => x.id === pid); if (tracked(p)) { p.stock = r2(p.stock - need[pid]); put(sh, 'products', p); } }
   const total = r2(sum(lines, l => l.price * l.qty));
-  const s = add(sh, 'sales', { id: uid(), ts: Date.now(), date: today(sh), userId: req.user.id, userName: req.user.name, items: lines, total, payment, customer: (customer || '').trim(), note: note || '', status: 'ok', voidRequest: null });
-  audit(sh, req.user, 'sale', `Sale ${total} (${payment}): ${lines.map(l => l.qty + '×' + l.name).join(', ')}`);
+  const discount = r2(sum(lines, l => Math.max(0, l.listPrice - l.price) * l.qty));
+  const s = add(sh, 'sales', { id: uid(), ts: Date.now(), date: today(sh), userId: req.user.id, userName: req.user.name, items: lines, total, discount, payment, customer: (customer || '').trim(), note: note || '', status: 'ok', voidRequest: null });
+  audit(sh, req.user, 'sale', `Sale ${total} (${payment}): ${lines.map(l => l.qty + '×' + l.name).join(', ')}${discount ? ' [DISCOUNT ' + discount + ' below list price]' : ''}`);
   res.json(showSale(s, req.user));
 });
 app.get('/api/sales', auth, (req, res) => {
@@ -418,10 +429,12 @@ app.get('/api/dashboard', auth, owner, (req, res) => {
   const vc = sh.sales.filter(s => s.ts >= week && (s.voidRequest || s.status === 'void')).length;
   if (vc >= 3) alerts.push({ level: 'warn', text: `${vc} void requests/voids in the last 7 days. Review them.`, go: 'sales' });
   if (avg7 > 0 && days[6].total < avg7 * 0.5 && new Date(Date.now() + sh.meta.tz * 3600e3).getUTCHours() >= 15) alerts.push({ level: 'warn', text: `Today's sales (${days[6].total}) are less than half of your usual daily average (${Math.round(avg7)})`, go: 'sales' });
+  const wk = ok.filter(x => x.ts >= week), discWeek = sum(wk, x => x.discount || 0), salesWeek = sum(wk, x => x.total);
+  if (discWeek > 0 && discWeek >= 0.1 * (salesWeek + discWeek)) alerts.push({ level: 'warn', text: `Discounts given this week total ${Math.round(discWeek)}, which is ${Math.round(100 * discWeek / (salesWeek + discWeek))}% of list value. Check the Sales page.`, go: 'sales' });
   if (low.length) alerts.push({ level: 'warn', text: `${low.length} product(s) at or below reorder level`, go: 'restock' });
   const lc = [...sh.closings].sort((a, b) => b.ts - a.ts)[0];
   res.json({
-    today: { total: sum(ts, s => s.total), count: ts.length, profit: r2(sum(ts, saleProfit)), cash: sum(ts.filter(s => s.payment === 'cash'), s => s.total), momo: sum(ts.filter(s => s.payment === 'momo'), s => s.total), credit: sum(ts.filter(s => s.payment === 'credit'), s => s.total), expenses: sum(sh.expenses.filter(e => e.date === d), e => e.amount) },
+    today: { total: sum(ts, s => s.total), discount: r2(sum(ts, s => s.discount || 0)), count: ts.length, profit: r2(sum(ts, saleProfit)), cash: sum(ts.filter(s => s.payment === 'cash'), s => s.total), momo: sum(ts.filter(s => s.payment === 'momo'), s => s.total), credit: sum(ts.filter(s => s.payment === 'credit'), s => s.total), expenses: sum(sh.expenses.filter(e => e.date === d), e => e.amount) },
     days, top: Object.values(sold).sort((a, b) => b.revenue - a.revenue).slice(0, 5),
     low: low.slice(0, 15), outOfStock: stockItems.filter(p => p.stock <= 0).length, productCount: active.length,
     stockCost: r2(sum(stockItems, p => p.stock * p.costPrice)), stockRetail: r2(sum(stockItems, p => p.stock * p.price)),
