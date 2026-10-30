@@ -1,0 +1,22 @@
+/* Colour palette, gradients and typography tokens */
+:root {
+  --ink: #1e1b3a; --mut: #6b6f8d; --line: #e7e8f6; --card: #ffffff;
+  --indigo: #4f46e5; --violet: #7c3aed; --blue: #0ea5e9; --teal: #14b8a6; --green: #22c55e;
+  --orange: #f97316; --pink: #ec4899; --red: #ef4444; --amber: #f59e0b; --mtn: #ffcc00;
+  --g-main: linear-gradient(135deg, #4f46e5, #7c3aed);
+  --g-green: linear-gradient(135deg, #059669, #22c55e);
+  --g-blue: linear-gradient(135deg, #0284c7, #38bdf8);
+  --g-orange: linear-gradient(135deg, #ea580c, #fb923c);
+  --g-pink: linear-gradient(135deg, #db2777, #f472b6);
+  --g-red: linear-gradient(135deg, #dc2626, #f87171);
+  --g-teal: linear-gradient(135deg, #0d9488, #2dd4bf);
+  --g-amber: linear-gradient(135deg, #d97706, #fbbf24);
+  --g-mtn: linear-gradient(135deg, #ffcc00, #ffe066);
+  --g-header: linear-gradient(110deg, #4338ca 0%, #7c3aed 45%, #db2777 100%);
+  --shadow: 0 6px 24px rgba(79, 70, 229, .10);
+  --radius: 18px;
+}
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; color: var(--ink);
+  background: linear-gradient(135deg, #eef2ff 0%, #fdf2f8 50%, #ecfeff 100%) fixed;
+}

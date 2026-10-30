@@ -1,2 +1,6 @@
 node_modules
-data
+data/
+.env
+.env.*
+logs
+*.log
